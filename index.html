@@ -1,0 +1,403 @@
+
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 100%; }
+#gw {
+  font-family: var(--font-sans);
+  user-select: none;
+  touch-action: manipulation;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+#hud {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  flex-shrink: 0;
+}
+.sb { font-size: 20px; font-weight: 500; min-width: 70px; }
+.sb.left { color: #795548; text-align: left; }
+.sb.right { color: #2e7d32; text-align: right; }
+#tmr { font-size: 18px; font-weight: 500; color: var(--color-text-primary); }
+#cw { position: relative; width: 100%; flex: 1; }
+#cv { display: block; width: 100%; height: 100%; border-radius: 10px; }
+#ov {
+  position: absolute; inset: 0; border-radius: 10px;
+  background: rgba(0,0,0,0.68);
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 10px;
+}
+#ov h2 { color: #fff; font-size: 24px; font-weight: 500; }
+#ov p { color: #ddd; font-size: 14px; text-align: center; }
+.game-btn {
+  padding: 14px 44px;
+  font-size: 20px;
+  font-weight: 500;
+  border-radius: 10px;
+  border: 3px solid #fff;
+  background: #FF6F00;
+  color: #ffffff;
+  cursor: pointer;
+  margin-top: 12px;
+  letter-spacing: 0.04em;
+  box-shadow: 0 0 0 4px rgba(255,111,0,0.35);
+}
+.game-btn:active { transform: scale(0.97); }
+
+@media (max-width: 600px) {
+  #gw {
+    position: fixed;
+    inset: 0;
+    height: 100%;
+    height: 100dvh;
+  }
+  #hud { padding: 8px 12px; }
+  .sb { font-size: 18px; }
+  #tmr { font-size: 17px; }
+  #cv { border-radius: 0; }
+  #ov { border-radius: 0; }
+}
+</style>
+
+<div id="gw">
+  <div id="hud">
+    <div class="sb left" id="ms">🐀 0</div>
+    <div id="tmr">⏱ 60</div>
+    <div class="sb right" id="rs">0 🥕</div>
+  </div>
+  <div id="cw">
+    <canvas id="cv"></canvas>
+    <div id="ov">
+      <h2>🥕 Руслан и Морковка</h2>
+      <p>Тапай по морковкам — Руслан соберёт!<br>Крот тоже не дремлет...</p>
+      <button class="game-btn" id="sbtn">▶ НАЧАТЬ ИГРУ</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const cv = document.getElementById('cv');
+const ct = cv.getContext('2d');
+const ov = document.getElementById('ov');
+const rsEl = document.getElementById('rs');
+const msEl = document.getElementById('ms');
+const tmrEl = document.getElementById('tmr');
+const cw_el = document.getElementById('cw');
+
+// On mobile use more rows for vertical layout
+let COLS, ROWS;
+let W, H, cw, ch;
+let state = 'idle';
+let rScore = 0, mScore = 0, tLeft = 60;
+let cells = [];
+let R = { col:0, row:0, x:0, y:0, tx:0, ty:0, moving:false };
+let M = { col:0, row:0, x:0, y:0, tx:0, ty:0, moving:false, targetCol:-1, targetRow:-1 };
+let particles = [];
+let raf, timerInt, spawnInt, moleInt, tick = 0;
+const MOVE_SPEED = 0.13;
+const MOLE_SPEEDS = [0.055, 0.09, 0.13];
+let moleSpd = MOLE_SPEEDS[0];
+
+function isMobile() { return window.innerWidth <= 600; }
+
+function getGrid() {
+  return isMobile() ? { cols: 3, rows: 5 } : { cols: 4, rows: 3 };
+}
+
+function cellXY(col, row) { return { x: cw*col + cw/2, y: ch*row + ch/2 }; }
+
+function resize() {
+  const mobile = isMobile();
+  const g = getGrid();
+  COLS = g.cols; ROWS = g.rows;
+
+  if (mobile) {
+    // fill the container which is position:fixed full screen
+    W = cw_el.offsetWidth || window.innerWidth;
+    H = cw_el.offsetHeight || (window.innerHeight - document.getElementById('hud').offsetHeight);
+  } else {
+    W = cw_el.offsetWidth || 480;
+    H = Math.round(W * 0.65);
+  }
+
+  cv.width = W; cv.height = H;
+  cw = W / COLS; ch = H / ROWS;
+
+  if (state !== 'idle') {
+    R.col = Math.min(R.col, COLS-1); R.row = Math.min(R.row, ROWS-1);
+    M.col = Math.min(M.col, COLS-1); M.row = Math.min(M.row, ROWS-1);
+    const rp = cellXY(R.col, R.row); R.x=rp.x; R.y=rp.y; R.tx=rp.x; R.ty=rp.y;
+    const mp = cellXY(M.col, M.row); M.x=mp.x; M.y=mp.y; M.tx=mp.x; M.ty=mp.y;
+  }
+  draw();
+}
+
+function initCells() {
+  cells = [];
+  for (let r=0;r<ROWS;r++) for (let c=0;c<COLS;c++)
+    cells.push({col:c, row:r, carrot:false, carrotAge:0, carrotLife:0, highlight:0});
+}
+function getCell(col,row){ return cells.find(c=>c.col===col&&c.row===row); }
+
+function spawnCarrot() {
+  const empty = cells.filter(c=>!c.carrot);
+  if (!empty.length) return;
+  const c = empty[Math.floor(Math.random()*empty.length)];
+  c.carrot=true; c.carrotAge=0; c.carrotLife=2500+Math.random()*2000;
+}
+
+function moveMole() {
+  if (M.moving) return;
+  const av = cells.filter(c=>c.carrot);
+  if (!av.length) return;
+  const t = av[Math.floor(Math.random()*av.length)];
+  const p = cellXY(t.col, t.row);
+  M.tx=p.x; M.ty=p.y; M.targetCol=t.col; M.targetRow=t.row; M.moving=true;
+}
+
+function lerpTo(e, spd) {
+  const dx=e.tx-e.x, dy=e.ty-e.y, d=Math.sqrt(dx*dx+dy*dy);
+  if (d<3){e.x=e.tx;e.y=e.ty;return true;}
+  e.x+=dx*spd; e.y+=dy*spd; return false;
+}
+
+function addParticles(x,y,col,n){
+  for(let i=0;i<n;i++){
+    const a=Math.random()*Math.PI*2, s=1.5+Math.random()*3;
+    particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s-1,life:1,col});
+  }
+}
+
+function drawCarrot(x,y,sz,alpha,glow){
+  ct.save(); ct.globalAlpha=alpha; ct.translate(x,y);
+  if(glow){ct.shadowBlur=16;ct.shadowColor='#ff9800';}
+  ct.fillStyle='#f4511e';
+  ct.beginPath();
+  ct.moveTo(0,sz*0.55);
+  ct.quadraticCurveTo(-sz*0.45,sz*0.1,-sz*0.3,-sz*0.5);
+  ct.quadraticCurveTo(0,-sz*0.8,sz*0.3,-sz*0.5);
+  ct.quadraticCurveTo(sz*0.45,sz*0.1,0,sz*0.55);
+  ct.fill();
+  ct.strokeStyle='#bf360c'; ct.lineWidth=sz*0.06;
+  for(let i=0;i<3;i++){const ty=-sz*0.3+i*sz*0.28;ct.beginPath();ct.moveTo(-sz*0.28,ty);ct.lineTo(sz*0.28,ty);ct.stroke();}
+  ct.fillStyle='#2e7d32';
+  for(let i=-1;i<=1;i++){
+    ct.beginPath();ct.moveTo(i*sz*0.12,-sz*0.75);
+    ct.quadraticCurveTo(i*sz*0.4,-sz*1.35,i*sz*0.15,-sz*1.5);
+    ct.quadraticCurveTo(i*sz*0.02,-sz*1.2,i*sz*0.05,-sz*0.78);
+    ct.fill();
+  }
+  ct.restore();
+}
+
+function drawRuslan(x, y, moving) {
+  ct.save();
+  ct.translate(x, y);
+  const bob = moving ? Math.sin(tick/6)*(ch*0.03) : 0;
+  ct.translate(0, bob);
+  const r = Math.min(cw, ch) * 0.22;
+
+  ct.fillStyle = '#1565C0';
+  ct.fillRect(-r*0.5, r*1.05, r*0.42, r*1.05);
+  ct.fillRect(r*0.08, r*1.05, r*0.42, r*1.05);
+  ct.strokeStyle = '#0D47A1'; ct.lineWidth = r*0.06;
+  ct.beginPath(); ct.moveTo(0, r*1.05); ct.lineTo(0, r*2.1); ct.stroke();
+  ct.fillStyle = '#3E2723';
+  ct.fillRect(-r*0.56, r*1.95, r*0.5, r*0.32);
+  ct.fillRect(r*0.06, r*1.95, r*0.5, r*0.32);
+
+  ct.fillStyle = '#f5f5f5';
+  ct.fillRect(-r*0.62, r*0.18, r*1.24, r*0.95);
+  ct.fillStyle = '#e0e0e0';
+  ct.beginPath(); ct.arc(0, r*0.18, r*0.28, Math.PI, 0); ct.fill();
+  ct.fillStyle = '#f5f5f5';
+  ct.fillRect(-r*0.92, r*0.18, r*0.34, r*0.55);
+  ct.fillRect(r*0.58, r*0.18, r*0.34, r*0.55);
+  ct.fillStyle = '#FFCC80';
+  ct.fillRect(-r*0.88, r*0.68, r*0.28, r*0.42);
+  ct.fillRect(r*0.6, r*0.68, r*0.28, r*0.42);
+  ct.beginPath(); ct.arc(-r*0.74, r*1.12, r*0.18, 0, Math.PI*2); ct.fill();
+  ct.beginPath(); ct.arc(r*0.74, r*0.7, r*0.18, 0, Math.PI*2); ct.fill();
+
+  ct.strokeStyle = '#6D4C41'; ct.lineWidth = r*0.14;
+  ct.beginPath(); ct.moveTo(r*0.74, r*0.7); ct.lineTo(r*1.3, r*1.8); ct.stroke();
+  ct.fillStyle = '#9E9E9E';
+  ct.beginPath(); ct.ellipse(r*1.36, r*1.9, r*0.16, r*0.28, 0.4, 0, Math.PI*2); ct.fill();
+
+  ct.fillStyle = '#FFCC80';
+  ct.beginPath(); ct.arc(0, 0, r, 0, Math.PI*2); ct.fill();
+
+  ct.fillStyle = '#EFBC74';
+  ct.beginPath(); ct.arc(0, 0, r*0.99, Math.PI*0.55, 0); ct.lineTo(0,0); ct.fill();
+  ct.beginPath(); ct.arc(0, 0, r*0.99, Math.PI, Math.PI*1.45); ct.lineTo(0,0); ct.fill();
+  ct.fillStyle = '#3E2723';
+  ct.beginPath(); ct.arc(0, -r*0.08, r*0.88, Math.PI*1.1, Math.PI*1.9); ct.lineTo(0,-r*0.08); ct.closePath(); ct.fill();
+  ct.beginPath();
+  ct.moveTo(-r*0.45, -r*0.62);
+  ct.quadraticCurveTo(-r*0.1, -r*1.08, r*0.3, -r*0.72);
+  ct.quadraticCurveTo(r*0.1, -r*0.58, -r*0.45, -r*0.62);
+  ct.fill();
+
+  ct.fillStyle = '#1a1a1a';
+  ct.beginPath(); ct.arc(-r*0.3, -r*0.1, r*0.13, 0, Math.PI*2); ct.fill();
+  ct.beginPath(); ct.arc(r*0.3, -r*0.1, r*0.13, 0, Math.PI*2); ct.fill();
+  ct.fillStyle = '#fff';
+  ct.beginPath(); ct.arc(-r*0.26, -r*0.14, r*0.055, 0, Math.PI*2); ct.fill();
+  ct.beginPath(); ct.arc(r*0.33, -r*0.14, r*0.055, 0, Math.PI*2); ct.fill();
+  ct.strokeStyle = '#3E2723'; ct.lineWidth = r*0.08; ct.lineCap = 'round';
+  ct.beginPath(); ct.moveTo(-r*0.44,-r*0.28); ct.quadraticCurveTo(-r*0.3,-r*0.38,-r*0.16,-r*0.28); ct.stroke();
+  ct.beginPath(); ct.moveTo(r*0.16,-r*0.28); ct.quadraticCurveTo(r*0.3,-r*0.38,r*0.44,-r*0.28); ct.stroke();
+
+  ct.strokeStyle = '#8D4B20'; ct.lineWidth = r*0.09; ct.lineCap = 'round';
+  ct.beginPath(); ct.arc(0, r*0.08, r*0.32, Math.PI*0.15, Math.PI*0.85); ct.stroke();
+
+  ct.fillStyle = '#5D4037';
+  ct.beginPath(); ct.arc(0, r*0.22, r*0.75, Math.PI*0.18, Math.PI*0.82); ct.fill();
+  ct.fillStyle = '#4E342E';
+  ct.beginPath(); ct.ellipse(-r*0.18, r*0.17, r*0.17, r*0.07, -0.1, 0, Math.PI*2); ct.fill();
+  ct.beginPath(); ct.ellipse(r*0.18, r*0.17, r*0.17, r*0.07, 0.1, 0, Math.PI*2); ct.fill();
+
+  ct.restore();
+}
+
+function drawMole(x, y, moving) {
+  ct.save(); ct.translate(x, y);
+  const bob = moving ? Math.sin(tick/5)*(ch*0.035) : 0;
+  ct.translate(0, bob);
+  const r = Math.min(cw,ch)*0.19;
+  ct.fillStyle='#757575'; ct.beginPath(); ct.ellipse(0,r*0.8,r*0.55,r*0.65,0,0,Math.PI*2); ct.fill();
+  ct.fillStyle='#616161'; ct.beginPath(); ct.arc(0,0,r,0,Math.PI*2); ct.fill();
+  ct.fillStyle='#FFCCBC'; ct.beginPath(); ct.ellipse(0,r*0.25,r*0.5,r*0.38,0,0,Math.PI*2); ct.fill();
+  ct.fillStyle='#E57373'; ct.beginPath(); ct.arc(0,r*0.35,r*0.18,0,Math.PI*2); ct.fill();
+  ct.fillStyle='#9E9E9E';
+  ct.beginPath(); ct.ellipse(-r*0.65,r*0.7,r*0.22,r*0.14,-0.5,0,Math.PI*2); ct.fill();
+  ct.beginPath(); ct.ellipse(r*0.65,r*0.7,r*0.22,r*0.14,0.5,0,Math.PI*2); ct.fill();
+  ct.fillStyle='#212121';
+  ct.beginPath(); ct.arc(-r*0.32,-r*0.12,r*0.14,0,Math.PI*2); ct.fill();
+  ct.beginPath(); ct.arc(r*0.32,-r*0.12,r*0.14,0,Math.PI*2); ct.fill();
+  ct.fillStyle='#fff';
+  ct.beginPath(); ct.arc(-r*0.28,-r*0.16,r*0.06,0,Math.PI*2); ct.fill();
+  ct.beginPath(); ct.arc(r*0.35,-r*0.16,r*0.06,0,Math.PI*2); ct.fill();
+  ct.restore();
+}
+
+function drawBg() {
+  const dark = window.matchMedia('(prefers-color-scheme:dark)').matches;
+  ct.fillStyle = dark ? '#1b2b0c' : '#dcedc8'; ct.fillRect(0,0,W,H);
+  for (let r=0;r<ROWS;r++) for (let c=0;c<COLS;c++) {
+    const x=c*cw, y=r*ch, even=(c+r)%2===0;
+    ct.fillStyle = even ? (dark?'#3e2c10':'#8d6e4a') : (dark?'#4a3418':'#a07850');
+    ct.fillRect(x+2,y+2,cw-4,ch-4);
+    ct.fillStyle = dark?'#2a1c08':'#6d4c2a';
+    for(let i=0;i<3;i++) ct.fillRect(x+8+i*(cw*0.28),y+ch-ch*0.18,cw*0.1,ch*0.12);
+  }
+}
+
+function draw() {
+  ct.clearRect(0,0,W,H); drawBg();
+  const sz = Math.min(cw,ch)*0.28;
+  cells.forEach(c=>{
+    if(!c.carrot) return;
+    const p=cellXY(c.col,c.row);
+    const popSz=sz*Math.min(c.carrotAge/300,1);
+    const age=c.carrotAge/c.carrotLife;
+    const alpha=age>0.75?0.3+0.7*(Math.sin(tick/3)*0.5+0.5):1;
+    drawCarrot(p.x,p.y,popSz,alpha,c.highlight>0);
+    if(c.highlight>0) c.highlight--;
+  });
+  particles=particles.filter(p=>p.life>0);
+  particles.forEach(p=>{
+    ct.globalAlpha=p.life; ct.fillStyle=p.col;
+    ct.beginPath(); ct.arc(p.x,p.y,4*p.life,0,Math.PI*2); ct.fill();
+    ct.globalAlpha=1; p.x+=p.vx; p.y+=p.vy; p.vy+=0.15; p.life-=0.045;
+  });
+  drawMole(M.x,M.y,M.moving);
+  drawRuslan(R.x,R.y,R.moving);
+}
+
+function loop() {
+  tick++;
+  cells.forEach(c=>{ if(!c.carrot) return; c.carrotAge+=16; if(c.carrotAge>=c.carrotLife) c.carrot=false; });
+  if (R.moving) {
+    if (lerpTo(R, MOVE_SPEED)) {
+      R.moving=false;
+      R.col=Math.max(0,Math.min(COLS-1,Math.round((R.x-cw/2)/cw)));
+      R.row=Math.max(0,Math.min(ROWS-1,Math.round((R.y-ch/2)/ch)));
+      const c=getCell(R.col,R.row);
+      if(c&&c.carrot){c.carrot=false;rScore++;rsEl.textContent=rScore+' 🥕';addParticles(R.x,R.y,'#ff6f00',10);}
+    }
+  }
+  if (M.moving) {
+    if (lerpTo(M, moleSpd)) {
+      M.moving=false; M.col=M.targetCol; M.row=M.targetRow;
+      const c=getCell(M.col,M.row);
+      if(c&&c.carrot){c.carrot=false;mScore++;msEl.textContent='🐀 '+mScore;addParticles(M.x,M.y,'#9E9E9E',7);}
+    }
+  }
+  draw();
+  if(state==='running') raf=requestAnimationFrame(loop);
+}
+
+function tapCell(col,row){
+  if(state!=='running') return;
+  col=Math.max(0,Math.min(COLS-1,col)); row=Math.max(0,Math.min(ROWS-1,row));
+  const p=cellXY(col,row); R.tx=p.x; R.ty=p.y; R.moving=true;
+  const c=getCell(col,row); if(c&&c.carrot) c.highlight=8;
+}
+
+cv.addEventListener('click', e=>{
+  const rect=cv.getBoundingClientRect(), sx=W/rect.width, sy=H/rect.height;
+  tapCell(Math.floor((e.clientX-rect.left)*sx/cw), Math.floor((e.clientY-rect.top)*sy/ch));
+});
+cv.addEventListener('touchend', e=>{
+  e.preventDefault();
+  const rect=cv.getBoundingClientRect(), sx=W/rect.width, sy=H/rect.height, t=e.changedTouches[0];
+  tapCell(Math.floor((t.clientX-rect.left)*sx/cw), Math.floor((t.clientY-rect.top)*sy/ch));
+},{passive:false});
+
+function startGame(){
+  const g = getGrid(); COLS=g.cols; ROWS=g.rows;
+  state='running'; rScore=0; mScore=0; tLeft=60; moleSpd=MOLE_SPEEDS[0];
+  rsEl.textContent='0 🥕'; msEl.textContent='🐀 0'; tmrEl.textContent='⏱ 60';
+  ov.style.display='none'; initCells(); particles=[]; tick=0;
+  const rp=cellXY(0,0); R.col=0;R.row=0;R.x=rp.x;R.y=rp.y;R.tx=rp.x;R.ty=rp.y;R.moving=false;
+  const mp=cellXY(COLS-1,ROWS-1); M.col=COLS-1;M.row=ROWS-1;M.x=mp.x;M.y=mp.y;M.tx=mp.x;M.ty=mp.y;M.moving=false;M.targetCol=COLS-1;M.targetRow=ROWS-1;
+  cancelAnimationFrame(raf); raf=requestAnimationFrame(loop);
+  setTimeout(spawnCarrot,200); setTimeout(spawnCarrot,600); setTimeout(spawnCarrot,1000);
+  spawnInt=setInterval(()=>{spawnCarrot();if(Math.random()<0.5)spawnCarrot();},1100);
+  moleInt=setInterval(moveMole,2000);
+  timerInt=setInterval(()=>{
+    tLeft--; tmrEl.textContent='⏱ '+tLeft;
+    if(tLeft===30){moleSpd=MOLE_SPEEDS[1];clearInterval(moleInt);moleInt=setInterval(moveMole,1500);}
+    if(tLeft===15){moleSpd=MOLE_SPEEDS[2];clearInterval(moleInt);moleInt=setInterval(moveMole,1000);}
+    if(tLeft<=0) endGame();
+  },1000);
+}
+
+function endGame(){
+  state='over'; clearInterval(timerInt);clearInterval(spawnInt);clearInterval(moleInt);
+  cancelAnimationFrame(raf); draw();
+  const win=rScore>mScore, tie=rScore===mScore;
+  ov.style.display='flex';
+  ov.innerHTML=`
+    <h2 style="color:#fff;font-size:22px;">${tie?'🤝 Ничья!':win?'🎉 Руслан победил!':'😱 Крот победил!'}</h2>
+    <p style="color:#ddd;font-size:14px;">🥕 Руслан собрал: <b>${rScore}</b></p>
+    <p style="color:#ddd;font-size:14px;">🐀 Крот украл: <b>${mScore}</b></p>
+    <button class="game-btn" id="sbtn">▶ ИГРАТЬ СНОВА</button>
+  `;
+  document.getElementById('sbtn').addEventListener('click',startGame);
+}
+
+document.getElementById('sbtn').addEventListener('click',startGame);
+
+// Resize: on mobile use ResizeObserver for reliable height after layout
+let resizeTimer;
+function scheduleResize(){ clearTimeout(resizeTimer); resizeTimer=setTimeout(resize,60); }
+window.addEventListener('resize', scheduleResize);
+if (window.ResizeObserver) {
+  new ResizeObserver(scheduleResize).observe(cw_el);
+}
+resize();
+</script>
